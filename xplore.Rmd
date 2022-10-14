@@ -1,0 +1,170 @@
+---
+title: "SummarizedExperiment with compressed and file-backed array data"
+output: html_document
+date: "2022-10-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load packages
+
+```{r libraries}
+
+source('./utils.R')
+library(SummarizedExperiment)
+library(HDF5Array)
+
+```
+
+```{r rse_jxn download and load}
+if (!dir.exists('./jxdata')) {
+  dir.create('./jxdata')
+}
+options(timeout = max(300, getOption("timeout")))
+for (f in c('rse_jxn_caudate_n464.rda','rse_jxn_astellas_n263.rda')) {
+  fd=paste0('./jxdata/',f)
+  if (! file.exists(fd)) {
+    download.file(paste0('https://dev.libd.org/vuk1tgje7i/',f), destfile=fd)
+  }
+}
+load("jxdata/rse_jxn_caudate_n464.rda")
+oi(rse_jxn)
+oi(assay(rse_jxn))
+```
+
+```{r}
+
+mx <- assays(rse_jxn)$counts
+oi(mx)
+sparsemx <- as(mx, "sparseMatrix")
+oi(sparsemx)
+```
+
+```{r}
+## warning: at this point >18GB RAM might be used
+mx1 <- mx+1
+os(mx)
+sparsemx <- as(mx1, "sparseMatrix")
+os(sparsemx)
+rm(sparsemx)
+gc()
+```
+
+```{r}
+rlemx <- as(mx, "RleMatrix") # takes several seconds
+oi(rlemx)
+rm(rlemx)
+rlemx1 <- as(mx1, "RleMatrix")
+os(rlemx1) # same size
+rm(rlemx1)
+gc()
+```
+
+```{r hdf5array}
+h5mx <- as(mx, "HDF5Matrix") # this can take a long time
+oi(h5mx)
+as.matrix(h5mx[1:6, 1:8]) # slicing can take a while, depending on access pattern and "chunking"
+rm(h5mx)
+```
+
+
+SingleCellExperiment class already makes copious use of file-backed DelayedArray data
+
+```{r}
+library(TENxBrainData)
+sce.brain <- TENxBrainData20k() 
+oi(assay(sce.brain))
+# cleanup
+rm(sce.brain)
+```
+
+```{r save compressed sparse matrix RSE}
+assays(rse_jxn)$counts <- as(assays(rse_jxn)$counts, 'sparseMatrix')
+os(rse_jxn)
+save(rse_jxn, file="rse_jxn_sparseMatrix.rda") #this takes a while
+## anyway restore the uncompressed matrix for now:
+assays(rse_jxn)$counts <- mx
+rm(mx, mx1)
+gc()
+```
+
+```{r}
+rseh5 <- saveHDF5SummarizedExperiment(rse_jxn, dir="./rseh5_caudate_n464", replace=T)
+#rseh5 <- loadHDF5SummarizedExperiment(dir="./rseh5_caudate_n464")
+oi(rseh5)
+```
+
+```{r merge jxn slow}
+#still too much memory usage at this point -- better restart R and continue
+source('./utils.R')
+load("jxdata/rse_jxn_caudate_n464.rda")
+rsej1 <- rse_jxn
+## convert to compressed sparse matrix to save memory:
+assays(rsej1)$counts <- as(assays(rsej1)$counts, 'sparseMatrix')
+load("jxdata/rse_jxn_astellas_n263.rda")
+rsej2 <- rse_jxn
+rm(rse_jxn)
+## convert to compressed sparse matrix to save memory:
+assays(rsej2)$counts <- as(assays(rsej2)$counts, 'sparseMatrix')
+## merge the two jx matrices:
+mxlist=list(assays(rsej1)$counts, assays(rsej2)$counts)
+allRownames <- unique(unlist(lapply(mxlist,rownames)))
+mrgmx <- NULL # this will be the merged matrix
+for (mx in mxlist) {
+    newRowLocations <- match(rownames(mx),allRownames)
+    indexes <- which(mx!=0, arr.ind = T)
+    newRows <- newRowLocations[indexes[,1]] #new rows in this matrix
+    cols <- indexes[,2]
+    newMatrix <- sparseMatrix(i=newRows,j=cols, x=mx@x,
+                     dims=c(length(allRownames), ncol(mx)),
+                     dimnames=list(allRownames, colnames(mx)), repr="C")
+    if (is.null(mrgmx)) {
+      mrgmx <- newMatrix
+    }
+    else { #use MatrixExtra so this does not automatically convert cbind2 output dgCMatrix
+      mrgmx <- cbind2(mrgmx,newMatrix)
+    }
+}
+rownames(mrgmx) <- allRownames
+# to prepare the merged rowRanges:
+rrmerge <- unique(Reduce(c, lapply(list(rsej1, rsej2) , rowRanges)))
+
+
+```
+
+
+```{r}
+## simplify/unify colData to make sure they are compatible:
+ocd1 <- colData(rsej1) # save original colData just in case
+colData(rsej1) <-  colData(rsej1)[,c("SAMPLE_ID", "BrNum", "RNum", "Dx", "Age", "Sex", "Race")]
+ocd2 <- colData(rsej2) # save original colData
+colData(rsej2) <-  colData(rsej2)[,colnames(colData(rsej1))]
+## this is needed to avoid DataFrame CharacterList errors
+##  see https://github.com/Bioconductor/S4Vectors/issues/102
+rowData(rsej1) <- DataFrame(as.data.frame(rowData(rsej1)))
+rowData(rsej2) <- DataFrame(as.data.frame(rowData(rsej2)))
+## finally get the combined RSE jx:
+mrse <- combineCols(rsej1, rsej2, use.names = T)
+```
+
+
+```{r}
+colData(rsej2) <- ocd2
+rhf2 <- saveHDF5SummarizedExperiment(rsej2, dir="./rseh5_astellas_n263", replace=T)
+rhf1 <- loadHDF5SummarizedExperiment(dir="./rseh5_caudate_n464")
+#rhf2 <- loadHDF5SummarizedExperiment(dir="./rseh5_astellas_n263")
+colData(rhf1) <-  colData(rhf1)[,c("SAMPLE_ID", "BrNum", "RNum", "Dx", "Age", "Sex", "Race")]
+colData(rhf2) <-  colData(rhf2)[, colnames(colData(rhf1))]
+## this is needed to avoid DataFrame CharacterList errors
+##  see https://github.com/Bioconductor/S4Vectors/issues/102
+rowData(rhf1) <- DataFrame(as.data.frame(rowData(rhf1)))
+rowData(rhf2) <- DataFrame(as.data.frame(rowData(rhf2)))
+## finally get the combined RSE jx:
+mrhf <- combineCols(rhf1, rhf2, use.names = T)
+oi(assay(mrhf))
+## this will take a while and use quite a bit of memory:
+cmx <- as(assay(mrhf), 'sparseMatrix')
+```
+
