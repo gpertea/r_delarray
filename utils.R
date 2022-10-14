@@ -1,12 +1,5 @@
-## for usethis::use_git()
-options(usethis.protocol = "ssh")
-options(repos=structure(c(CRAN="https://cran.rstudio.com")))
-## for developing R packages
-#if (interactive()) {
-#  suppressMessages(require("devtools"))
-#  suppressMessages(require("testthat"))
-#  suppressMessages(require("usethis"))
-#}
+require('lobstr') ## to get more accurate object memory use
+
 nasum <- function(o) {
   if (grepl("frame", paste(class(o), collapse = ' '), ignore.case = T)) {
     s <- colSums(is.na(o), )
@@ -34,20 +27,26 @@ tt = function(d, n=8, r=6) {
   tail(d, r)[, sc:m]
   }
 
-os = function(o, units="MB") {
-  message("mem size: ", format(object.size(o), units=units))
+os = function(o, bytes=F) {
+  v=as.numeric(lobstr::obj_size(o))
+  if (bytes) {
+    message("mem size: ", v)
+  } else {
+    message("mem size: ",paste0(format(round(v/(1024*1024),1), big.mark=','), " MB"))
+  }
+  invisible(v)
 }
 
 oi = function(o) {
   d=dim(o)
   len=""
   if (is.null(d)) {
-   len=paste0(" | length: ",length(o))
+    len=paste0(" | length: ",length(o))
   } else {
-   len=paste0(" | dim: ",paste(d, collapse=" x "))
+    len=paste0(" | dim: ",paste(d, collapse=" x "))
   }
-  message("class: ",paste(class(o), collapse=" "), ", typeof: ", typeof(o), len, " | mem: ",
-          format(object.size(o), units="auto") )
+  message("class: ",paste(class(o), collapse=' '), ", typeof: ", typeof(o), len, " | mem: ",
+          paste0(format(round(as.numeric(lobstr::obj_size(o))/(1024*1024),1), big.mark=','), " MB"))
 }
 
 coltypes=function(o) {
